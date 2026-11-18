@@ -1,25 +1,24 @@
-"""ss2ps - convertit un profil d'impression SuperSlicer (.ini) en profil PrusaSlicer (.ini).
+"""ss2ps - converts a SuperSlicer print profile (.ini) into a PrusaSlicer print profile (.ini).
 
-Usage :
-    ss2ps                                   -> ouvre la fenêtre
-    ss2ps <superslicer_print.ini>           -> conversion directe (aussi par glisser-déposer sur l'exe)
-    ss2ps <src.ini> [-o sortie.ini] [--nozzle 0.4] [--overrides overrides.ini]
+Usage:
+    ss2ps                                   -> opens the window
+    ss2ps <superslicer_print.ini>           -> window pre-filled (also by drag-and-drop onto the exe)
+    ss2ps <src.ini> [-o out.ini] [--nozzle 0.4] [--overrides overrides.ini]
 
-Produit :
-    - le .ini PrusaSlicer (toutes les clés print de PrusaSlicer 2.9.x)
-    - un rapport .md listant : conversions, doutes, valeurs par défaut, clés SuperSlicer ignorées
+Output:
+    - the PrusaSlicer .ini (every PrusaSlicer 2.9.x print key)
+    - a .md report listing: conversions, doubts, defaults, ignored SuperSlicer keys
 """
 import argparse
 import datetime
 import os
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ---------------------------------------------------------------------------
-# Valeurs par défaut PrusaSlicer 2.9.x pour les clés qui n'ont PAS d'équivalent
-# SuperSlicer (ou dont l'équivalent est désactivé). Toutes les clés print de
-# PrusaSlicer 2.9.6 sont listées ici ou dans RULES.
+# PrusaSlicer 2.9.x defaults for keys that have NO SuperSlicer equivalent.
+# Every PrusaSlicer 2.9.6 print key is either here or produced by Converter.run().
 # ---------------------------------------------------------------------------
 PRUSA_ONLY_DEFAULTS = {
     "arc_fitting": "disabled",
@@ -55,7 +54,7 @@ PRUSA_ONLY_DEFAULTS = {
     "wipe_tower_extra_flow": "100%",
 }
 
-# Clés dont le nom ET la sémantique sont identiques dans les deux slicers.
+# Keys whose name AND meaning are identical in both slicers.
 DIRECT_KEYS = [
     "avoid_crossing_curled_overhangs", "avoid_crossing_perimeters",
     "avoid_crossing_perimeters_max_detour", "bottom_solid_layers",
@@ -112,10 +111,9 @@ DIRECT_KEYS = [
     "wipe_tower_no_sparse_layers", "wipe_tower_width", "xy_size_compensation",
 ]
 
-# Clés SuperSlicer volontairement ignorées (pas d'équivalent PrusaSlicer) mais
-# dont la valeur a de l'impact : elles sont signalées dans le rapport.
+# Extrusion widths: SuperSlicer % (of nozzle) -> absolute mm.
 WIDTH_KEYS = {
-    # clé PrusaSlicer : clé SuperSlicer
+    # PrusaSlicer key: SuperSlicer key
     "extrusion_width": "extrusion_width",
     "external_perimeter_extrusion_width": "external_perimeter_extrusion_width",
     "perimeter_extrusion_width": "perimeter_extrusion_width",
@@ -148,9 +146,9 @@ class Converter:
         self.ss = ss
         self.nozzle = nozzle
         self.overrides = overrides or {}
-        self.used = set()          # clés SS consommées
-        self.out = {}              # clé Prusa -> valeur
-        self.log = []              # (statut, clé prusa, valeur, explication)
+        self.used = set()          # SuperSlicer keys consumed
+        self.out = {}              # PrusaSlicer key -> value
+        self.log = []              # (status, PrusaSlicer key, value, note)
 
     # -- helpers --------------------------------------------------------------
     def get(self, key, default=None):
@@ -162,7 +160,7 @@ class Converter:
         return v is not None and v.startswith("!")
 
     def width_mm(self, v):
-        """SuperSlicer : % = pourcentage du diamètre de buse. On sort des mm absolus."""
+        """SuperSlicer: % = percentage of nozzle diameter. Returns absolute mm."""
         if v is None or v == "" or self.disabled(v):
             return "0"
         if v.endswith("%"):
@@ -181,89 +179,89 @@ class Converter:
             if k in self.ss:
                 v = g(k)
                 if self.disabled(v):
-                    self.set(k, v[1:], "doute", f"valeur désactivée dans SuperSlicer (`{v}`), reprise telle quelle")
+                    self.set(k, v[1:], "doubt", f"value disabled in SuperSlicer (`{v}`), copied as is")
                 else:
                     self.set(k, v)
 
-        # Largeurs d'extrusion : % buse -> mm
+        # Extrusion widths: % of nozzle -> mm
         for pk, sk in WIDTH_KEYS.items():
             v = g(sk, "")
             mm = self.width_mm(v)
-            self.set(pk, mm, "converti",
-                     f"SS `{v or '(vide)'}` -> {mm} mm (base buse {self.nozzle} mm)" if v else "SS vide = auto -> 0 (auto)")
-        g("first_layer_infill_extrusion_width")  # pas d'équivalent ; signalé si actif
+            self.set(pk, mm, "converted",
+                     f"SS `{v}` -> {mm} mm (nozzle {self.nozzle} mm)" if v else "SS empty = auto -> 0 (auto)")
+        g("first_layer_infill_extrusion_width")  # no equivalent
         for k in ("external_perimeter_extrusion_spacing", "perimeter_extrusion_spacing",
                   "infill_extrusion_spacing", "solid_infill_extrusion_spacing",
                   "top_infill_extrusion_spacing", "first_layer_extrusion_spacing",
                   "first_layer_infill_extrusion_spacing", "extrusion_spacing"):
-            g(k)  # spacing = forme alternative de width chez SS, redondant
+            g(k)  # spacing = SuperSlicer's alternative form of width, redundant
 
-        # Débit de pont : 80% -> 0.8
+        # Bridge flow: 80% -> 0.8
         v = g("bridge_flow_ratio", "100%")
         r = fmt(float(v.rstrip("%")) / 100) if v.endswith("%") else v
-        self.set("bridge_flow_ratio", r, "converti", f"`{v}` -> ratio {r}")
+        self.set("bridge_flow_ratio", r, "converted", f"`{v}` -> ratio {r}")
 
-        # Ponts épais
+        # Thick bridges
         bt = g("bridge_type", "nozzle")
-        self.set("thick_bridges", "1" if bt == "nozzle" else "0", "converti",
-                 f"bridge_type=`{bt}` : 'nozzle' (pont au diamètre de buse) ≈ thick_bridges=1 chez Prusa")
+        self.set("thick_bridges", "1" if bt == "nozzle" else "0", "converted",
+                 f"bridge_type=`{bt}`: 'nozzle' (nozzle-diameter bridges) ~ thick_bridges=1 in PrusaSlicer")
 
-        # Angle de pont
+        # Bridge angle
         v = g("bridge_angle", "0")
-        self.set("bridge_angle", "0" if self.disabled(v) else v, "converti",
-                 f"`{v}` -> désactivé = 0 (auto)" if self.disabled(v) else "")
+        self.set("bridge_angle", "0" if self.disabled(v) else v, "converted",
+                 f"`{v}` -> disabled = 0 (auto)" if self.disabled(v) else "")
 
-        # Motifs top / bottom
+        # Top / bottom patterns
         for k in ("top_fill_pattern", "bottom_fill_pattern"):
             v = g(k, "monotonic")
             nv = FILL_PATTERN_MAP.get(v, v)
             if nv not in PRUSA_TOP_BOTTOM_PATTERNS:
                 nv = "monotoniclines"
-            st = "direct" if nv == v else "converti"
-            self.set(k, nv, st, "" if nv == v else f"`{v}` n'existe pas chez Prusa -> `{nv}`")
+            st = "direct" if nv == v else "converted"
+            self.set(k, nv, st, "" if nv == v else f"`{v}` does not exist in PrusaSlicer -> `{nv}`")
         v = g("solid_fill_pattern")
         if v:
-            self.log.append(("ignoré", "solid_fill_pattern", v,
-                             "Prusa n'a pas de motif pour le solide interne (toujours rectiligne/monotone)"))
+            self.log.append(("ignored", "solid_fill_pattern", v,
+                             "PrusaSlicer has no pattern setting for internal solid infill"))
 
-        # Coque verticale
+        # Vertical shell
         v = g("ensure_vertical_shell_thickness", "enabled")
         m = {"enabled_old": "enabled", "enabled": "enabled", "partial": "partial",
              "disabled": "disabled", "1": "enabled", "0": "disabled"}
         self.set("ensure_vertical_shell_thickness", m.get(v, "enabled"),
-                 "direct" if v in ("enabled", "partial", "disabled") else "doute",
+                 "direct" if v in ("enabled", "partial", "disabled") else "doubt",
                  "" if v in ("enabled", "partial", "disabled") else f"`{v}` -> `{m.get(v, 'enabled')}`")
 
-        # Compensation patte d'éléphant
+        # Elephant foot compensation
         v = g("first_layer_size_compensation", "0")
         g("first_layer_size_compensation_layers"); g("first_layer_size_compensation_no_collapse")
         efc = fmt(abs(float(v))) if float(v) <= 0 else "0"
-        self.set("elefant_foot_compensation", efc, "converti",
-                 f"first_layer_size_compensation `{v}` -> elefant_foot_compensation {efc} (signe inversé)")
+        self.set("elefant_foot_compensation", efc, "converted",
+                 f"first_layer_size_compensation `{v}` -> elefant_foot_compensation {efc} (sign inverted)")
 
-        # Résolution
+        # Resolution
         v = g("resolution", "0")
-        self.set("resolution", v, "doute", "SS 'resolution' -> Prusa 'resolution' (simplification du slice)")
+        self.set("resolution", v, "doubt", "SS 'resolution' -> PrusaSlicer 'resolution' (slice simplification)")
         g("resolution_internal")
 
-        # Un seul périmètre sur le dessus
+        # Single perimeter on top surfaces
         v = g("only_one_perimeter_top", "0")
         g("only_one_perimeter_top_other_algo")
-        self.set("top_one_perimeter_type", "top" if v == "1" else "none", "converti",
-                 f"only_one_perimeter_top={v} -> {'top (toutes surfaces sup.)' if v == '1' else 'none'}")
+        self.set("top_one_perimeter_type", "top" if v == "1" else "none", "converted",
+                 f"only_one_perimeter_top={v} -> {'top (all top surfaces)' if v == '1' else 'none'}")
 
-        # Surplombs
+        # Overhangs
         ow = g("overhangs_width", "75%")
         g("overhangs_width_speed"); g("overhangs_dynamic_speed"); g("overhangs_speed")
         g("overhangs_speed_enforce"); g("overhangs_bridge_threshold"); g("overhangs_bridge_upper_layers")
         g("overhangs_max_slope"); g("overhangs_reverse"); g("overhangs_reverse_threshold")
         on = "0" if self.disabled(ow) or ow in ("0", "0%") else "1"
-        self.set("overhangs", on, "converti",
-                 f"overhangs_width=`{ow}` -> détection des périmètres en surplomb {'activée' if on == '1' else 'désactivée'}")
+        self.set("overhangs", on, "converted",
+                 f"overhangs_width=`{ow}` -> overhang perimeter detection {'enabled' if on == '1' else 'disabled'}")
 
-        # Vitesse au-dessus des ponts internes
+        # Speed over internal bridges
         v = g("internal_bridge_speed", "100%")
-        self.set("over_bridge_speed", v, "converti",
+        self.set("over_bridge_speed", v, "converted",
                  f"internal_bridge_speed `{v}` -> over_bridge_speed")
         g("over_bridge_flow_ratio")
 
@@ -274,37 +272,37 @@ class Converter:
         v = g("support_material_bottom_contact_distance", "0")
         self.set("support_material_bottom_contact_distance", v)
         v = g("support_material_bottom_interface_layers", "-1")
-        self.set("support_material_bottom_interface_layers", "-1" if self.disabled(v) else v, "converti",
-                 f"`{v}` désactivé -> -1 (identique au dessus)" if self.disabled(v) else "")
+        self.set("support_material_bottom_interface_layers", "-1" if self.disabled(v) else v, "converted",
+                 f"`{v}` disabled -> -1 (same as top)" if self.disabled(v) else "")
         v = g("support_material_top_interface_pattern", "rectilinear")
         g("support_material_bottom_interface_pattern")
-        self.set("support_material_interface_pattern", v, "converti", "depuis support_material_top_interface_pattern")
+        self.set("support_material_interface_pattern", v, "converted", "from support_material_top_interface_pattern")
 
         # Fuzzy skin : % -> mm
         for k in ("fuzzy_skin_point_dist", "fuzzy_skin_thickness"):
             v = g(k, "0.3")
             mm = self.width_mm(v)
-            self.set(k, mm, "converti", f"`{v}` -> {mm} mm")
+            self.set(k, mm, "converted", f"`{v}` -> {mm} mm")
 
-        # print_custom_variables : non utilisé -> ignoré (listé dans "ignoré")
+        # print_custom_variables: not transferred (listed as ignored)
 
-        # Choix utilisateur
+        # User overrides
         for k, (v, why) in self.overrides.items():
             old = self.out.get(k)
-            self.set(k, v, "choix", f"{old} -> {v} : {why}")
+            self.set(k, v, "override", f"{old} -> {v}: {why}")
 
-        # Valeurs sans équivalent : défauts Prusa
+        # Keys with no equivalent: PrusaSlicer defaults
         for k, v in PRUSA_ONLY_DEFAULTS.items():
             if k not in self.out:
-                self.set(k, v, "défaut", "pas d'équivalent SuperSlicer, valeur par défaut PrusaSlicer")
+                self.set(k, v, "default", "no SuperSlicer equivalent, PrusaSlicer default")
 
         self.set("print_settings_id", "")
         g("print_settings_id"); g("print_version")
 
-        # Clés SS non consommées = ignorées
+        # SuperSlicer keys not consumed = ignored
         for k in sorted(self.ss):
             if k not in self.used:
-                self.log.append(("ignoré", k, self.ss[k], "pas d'équivalent PrusaSlicer"))
+                self.log.append(("ignored", k, self.ss[k], "no PrusaSlicer equivalent"))
         return self.out
 
 
@@ -326,7 +324,7 @@ def parse_ini(path):
 
 
 def parse_overrides(path):
-    """Fichier overrides : `cle = valeur`. Le commentaire `# ...` juste au-dessus sert de justification."""
+    """Overrides file: `key = value`. The `# ...` comment right above a line is used as the reason."""
     res, why = {}, ""
     with open(path, encoding="utf-8-sig") as f:
         for line in f:
@@ -337,13 +335,13 @@ def parse_overrides(path):
                 why = line.lstrip("# ").strip()
             elif "=" in line:
                 k, _, v = line.partition("=")
-                res[k.strip()] = (v.strip(), why or "override utilisateur")
+                res[k.strip()] = (v.strip(), why or "user override")
                 why = ""
     return res
 
 
 def app_dir():
-    """Dossier de l'exe (PyInstaller) ou du script."""
+    """Folder of the exe (PyInstaller) or of the script."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -364,14 +362,14 @@ def superslicer_print_dir():
     return p if os.path.isdir(p) else None
 
 
-REPORT_ORDER = ["doute", "choix", "converti", "défaut", "ignoré", "direct"]
+REPORT_ORDER = ["doubt", "override", "converted", "default", "ignored", "direct"]
 
 
 def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None):
-    """Convertit `src`. Retourne (chemin ini, chemin rapport, compteurs par statut)."""
+    """Converts `src`. Returns (ini path, report path, counts per status)."""
     ss = parse_ini(src)
     if "perimeters" not in ss or "layer_height" not in ss:
-        raise ValueError(f"{os.path.basename(src)} ne ressemble pas à un profil d'impression SuperSlicer")
+        raise ValueError(f"{os.path.basename(src)} does not look like a SuperSlicer print profile")
     overrides = parse_overrides(overrides_path) if overrides_path else {}
     conv = Converter(ss, nozzle, overrides)
     out = conv.run()
@@ -385,15 +383,15 @@ def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None):
         for k in sorted(out):
             f.write(f"{k} = {out[k]}\n")
 
-    rep_path = os.path.splitext(out_path)[0] + " - rapport.md"
+    rep_path = os.path.splitext(out_path)[0] + " - report.md"
     with open(rep_path, "w", encoding="utf-8") as f:
-        f.write(f"# Rapport de conversion : {os.path.basename(src)}\n\n"
-                f"Buse : {nozzle} mm  \nOverrides : {overrides_path or 'aucun'}\n")
+        f.write(f"# Conversion report: {os.path.basename(src)}\n\n"
+                f"Nozzle: {nozzle} mm  \nOverrides: {overrides_path or 'none'}\n")
         for st in REPORT_ORDER:
             rows = [r for r in conv.log if r[0] == st]
             if not rows:
                 continue
-            f.write(f"\n## {st} ({len(rows)})\n\n| clé | valeur | note |\n|---|---|---|\n")
+            f.write(f"\n## {st} ({len(rows)})\n\n| key | value | note |\n|---|---|---|\n")
             for _, k, v, n in rows:
                 f.write(f"| {k} | `{v}` | {n} |\n")
 
@@ -403,11 +401,11 @@ def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None):
 
 def summary(out_path, rep_path, counts):
     c = ", ".join(f"{k}: {v}" for k, v in counts.items())
-    return f"Profil PrusaSlicer :\n{out_path}\n\nRapport :\n{rep_path}\n\n{c}"
+    return f"PrusaSlicer profile:\n{out_path}\n\nReport:\n{rep_path}\n\n{c}"
 
 
 # ---------------------------------------------------------------------------
-# Interface graphique (tkinter)
+# Graphical interface (tkinter)
 # ---------------------------------------------------------------------------
 def gui(initial_src=None):
     import tkinter as tk
@@ -427,76 +425,76 @@ def gui(initial_src=None):
     outdir = tk.StringVar(value=prusa_print_dir() or "")
 
     def pick_src():
-        p = filedialog.askopenfilename(title="Profil d'impression SuperSlicer",
+        p = filedialog.askopenfilename(title="SuperSlicer print profile",
                                        initialdir=superslicer_print_dir() or os.getcwd(),
-                                       filetypes=[("Profils .ini", "*.ini"), ("Tous", "*.*")])
+                                       filetypes=[(".ini profiles", "*.ini"), ("All files", "*.*")])
         if p:
             src.set(p)
 
     def pick_ovr():
-        p = filedialog.askopenfilename(title="Fichier overrides (optionnel)", initialdir=app_dir(),
-                                       filetypes=[("Fichiers .ini", "*.ini"), ("Tous", "*.*")])
+        p = filedialog.askopenfilename(title="Overrides file (optional)", initialdir=app_dir(),
+                                       filetypes=[(".ini files", "*.ini"), ("All files", "*.*")])
         if p:
             ovr.set(p)
 
     def pick_out():
-        p = filedialog.askdirectory(title="Dossier de sortie", initialdir=outdir.get() or os.getcwd())
+        p = filedialog.askdirectory(title="Output folder", initialdir=outdir.get() or os.getcwd())
         if p:
             outdir.set(p)
 
-    rows = [("Profil SuperSlicer", src, pick_src), ("Overrides (optionnel)", ovr, pick_ovr),
-            ("Dossier de sortie", outdir, pick_out)]
+    rows = [("SuperSlicer profile", src, pick_src), ("Overrides (optional)", ovr, pick_ovr),
+            ("Output folder", outdir, pick_out)]
     for i, (lbl, var, cmd) in enumerate(rows):
         ttk.Label(frm, text=lbl).grid(row=i, column=0, sticky="w", pady=3)
         ttk.Entry(frm, textvariable=var, width=70).grid(row=i, column=1, sticky="ew", padx=6)
         ttk.Button(frm, text="...", width=4, command=cmd).grid(row=i, column=2)
-    ttk.Label(frm, text="Diamètre de buse (mm)").grid(row=3, column=0, sticky="w", pady=3)
+    ttk.Label(frm, text="Nozzle diameter (mm)").grid(row=3, column=0, sticky="w", pady=3)
     ttk.Entry(frm, textvariable=nozzle, width=8).grid(row=3, column=1, sticky="w", padx=6)
 
     def run():
         s = src.get().strip()
         if not os.path.isfile(s):
-            messagebox.showerror("Erreur", "Choisis un profil SuperSlicer (.ini).")
+            messagebox.showerror("Error", "Please choose a SuperSlicer profile (.ini).")
             return
         try:
             n = float(nozzle.get().replace(",", "."))
         except ValueError:
-            messagebox.showerror("Erreur", "Diamètre de buse invalide.")
+            messagebox.showerror("Error", "Invalid nozzle diameter.")
             return
         o = ovr.get().strip() or None
         if o and not os.path.isfile(o):
-            messagebox.showerror("Erreur", f"Fichier overrides introuvable :\n{o}")
+            messagebox.showerror("Error", f"Overrides file not found:\n{o}")
             return
         d = outdir.get().strip() or os.path.dirname(os.path.abspath(s))
         out_path = os.path.join(d, os.path.splitext(os.path.basename(s))[0] + " (PS).ini")
         if os.path.exists(out_path) and not messagebox.askyesno(
-                "Remplacer ?", f"{out_path}\nexiste déjà. Le remplacer ?"):
+                "Replace?", f"{out_path}\nalready exists. Replace it?"):
             return
         try:
             res = convert_file(s, out_path, n, o)
-        except Exception as e:  # erreur affichée à l'utilisateur
-            messagebox.showerror("Erreur", str(e))
+        except Exception as e:  # shown to the user
+            messagebox.showerror("Error", str(e))
             return
-        messagebox.showinfo("Conversion terminée",
-                            summary(*res) + "\n\nRelance PrusaSlicer pour voir le nouveau profil.")
+        messagebox.showinfo("Conversion done",
+                            summary(*res) + "\n\nRestart PrusaSlicer to see the new profile.")
 
-    ttk.Button(frm, text="Convertir", command=run).grid(row=4, column=0, columnspan=3, pady=(10, 0))
+    ttk.Button(frm, text="Convert", command=run).grid(row=4, column=0, columnspan=3, pady=(10, 0))
     root.mainloop()
 
 
 def main():
-    # Sans argument (double-clic) ou un seul .ini glissé sur l'exe : fenêtre (pré-remplie).
+    # No argument (double-click) or a single .ini dropped onto the exe: window (pre-filled).
     if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1].lower().endswith(".ini")
                               and getattr(sys, "frozen", False)):
         gui(sys.argv[1] if len(sys.argv) == 2 else None)
         return
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("src", help="profil d'impression SuperSlicer (.ini)")
-    ap.add_argument("-o", "--out", help="fichier .ini de sortie (défaut : dossier print de PrusaSlicer)")
-    ap.add_argument("--nozzle", type=float, default=0.4, help="diamètre de buse (pour convertir les %% en mm)")
-    ap.add_argument("--overrides", help="fichier d'overrides (défaut : overrides.ini à côté du programme s'il existe)")
-    ap.add_argument("--no-overrides", action="store_true", help="ignorer overrides.ini")
+    ap.add_argument("src", help="SuperSlicer print profile (.ini)")
+    ap.add_argument("-o", "--out", help="output .ini file (default: PrusaSlicer print folder)")
+    ap.add_argument("--nozzle", type=float, default=0.4, help="nozzle diameter (to convert %% widths to mm)")
+    ap.add_argument("--overrides", help="overrides file (default: overrides.ini next to the program, if present)")
+    ap.add_argument("--no-overrides", action="store_true", help="ignore overrides.ini")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args()
 

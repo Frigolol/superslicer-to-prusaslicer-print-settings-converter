@@ -7,4 +7,5 @@ __pycache__/
 overrides.ini
 # converted profiles and reports
 *(PS).ini
+*report.md
 *rapport.md

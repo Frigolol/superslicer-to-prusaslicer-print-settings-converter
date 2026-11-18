@@ -2,8 +2,6 @@
 
 Convert a **SuperSlicer print profile** (`.ini`) into a **PrusaSlicer 2.9** print profile, with a report explaining every setting: what was copied, what was converted, what has no equivalent.
 
-*[Version française plus bas](#français)*
-
 ---
 
 ## Features
@@ -20,11 +18,11 @@ Convert a **SuperSlicer print profile** (`.ini`) into a **PrusaSlicer 2.9** prin
 
   | status | meaning |
   |---|---|
-  | `doute` | converted, but worth checking |
-  | `choix` | value forced by your overrides file |
-  | `converti` | converted (unit / name / semantics) |
-  | `défaut` | PrusaSlicer-only setting, PrusaSlicer default used |
-  | `ignoré` | SuperSlicer setting with no PrusaSlicer equivalent |
+  | `doubt` | converted, but worth checking |
+  | `override` | value forced by your overrides file |
+  | `converted` | converted (unit / name / semantics) |
+  | `default` | PrusaSlicer-only setting, PrusaSlicer default used |
+  | `ignored` | SuperSlicer setting with no PrusaSlicer equivalent |
   | `direct` | same name, same meaning, copied as is |
 
 - **Overrides file**: force your own values (e.g. `gcode_label_objects = firmware` for Klipper) on every conversion.
@@ -44,9 +42,9 @@ Get `ss2ps.exe` from the [Releases](../../releases) page. No installation, no Py
 2. Pick the SuperSlicer print profile — the dialog opens in `%APPDATA%\SuperSlicer\print`.
 3. Check the nozzle diameter (used to turn `%` widths into mm).
 4. Optional: pick an overrides file.
-5. Click **Convertir**.
+5. Click **Convert**.
 
-By default the profile is written straight into `%APPDATA%\PrusaSlicer\print` as `<name> (PS).ini`, next to its report `<name> (PS) - rapport.md`. Restart PrusaSlicer and pick the profile in the print settings list.
+By default the profile is written straight into `%APPDATA%\PrusaSlicer\print` as `<name> (PS).ini`, next to its report `<name> (PS) - report.md`. Restart PrusaSlicer and pick the profile in the print settings list.
 
 ### Command line
 
@@ -97,8 +95,8 @@ The exe is created in `dist\ss2ps.exe`.
 ## Limitations
 
 - Target: PrusaSlicer 2.9.x print settings, source: SuperSlicer 2.5–2.7.
-- Many SuperSlicer-only features (`infill_connection`, `perimeter_direction`, `gap_fill_*` details, seam costs, per-feature accelerations, milling, …) have no PrusaSlicer equivalent and are listed as `ignoré` in the report.
-- Always read the `doute` section of the report and test-print before relying on a converted profile.
+- Many SuperSlicer-only features (`infill_connection`, `perimeter_direction`, `gap_fill_*` details, seam costs, per-feature accelerations, milling, …) have no PrusaSlicer equivalent and are listed as `ignored` in the report.
+- Always read the `doubt` section of the report and test-print before relying on a converted profile.
 
 Issues and pull requests with more mappings are welcome.
 
@@ -106,37 +104,3 @@ Issues and pull requests with more mappings are welcome.
 
 [MIT](LICENSE)
 
----
-
-## Français
-
-Convertit un **profil d'impression SuperSlicer** (`.ini`) en profil d'impression **PrusaSlicer 2.9**, avec un rapport qui explique chaque réglage.
-
-### Utilisation rapide
-
-1. Télécharge `ss2ps.exe` dans les [Releases](../../releases).
-2. Double-clique dessus (ou glisse un `.ini` SuperSlicer sur l'exe).
-3. Choisis le profil SuperSlicer, vérifie le diamètre de buse, clique **Convertir**.
-4. Le profil `<nom> (PS).ini` est écrit dans `%APPDATA%\PrusaSlicer\print` : relance PrusaSlicer.
-
-### Le rapport
-
-À côté du profil, `<nom> (PS) - rapport.md` classe chaque réglage :
-- **doute** : converti, mais à vérifier ;
-- **choix** : imposé par ton fichier d'overrides ;
-- **converti** : unité / nom / sens adaptés ;
-- **défaut** : réglage propre à PrusaSlicer, valeur par défaut ;
-- **ignoré** : pas d'équivalent dans PrusaSlicer ;
-- **direct** : même nom, même sens.
-
-### Overrides
-
-Pour imposer tes propres valeurs à chaque conversion, copie [`overrides.example.ini`](overrides.example.ini) en `overrides.ini` à côté de `ss2ps.exe` et adapte-le (une ligne `cle_prusaslicer = valeur`, le commentaire au-dessus sert de justification dans le rapport).
-
-### Ligne de commande
-
-```
-ss2ps.exe "<profil SuperSlicer>.ini" [-o sortie.ini] [--nozzle 0.4] [--overrides fichier.ini] [--no-overrides]
-```
-
-Seuls les réglages d'impression sont gérés pour l'instant (pas les filaments ni les imprimantes).
