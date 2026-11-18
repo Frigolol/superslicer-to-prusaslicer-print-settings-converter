@@ -18,13 +18,14 @@ Convert a **SuperSlicer print profile** (`.ini`) into a **PrusaSlicer 2.9** prin
 
   | status | meaning |
   |---|---|
-  | `doubt` | converted, but worth checking |
+  | `doubt` | no certain conversion: you confirm or change the value during the conversion |
   | `override` | value forced by your overrides file |
   | `converted` | converted (unit / name / semantics) |
   | `default` | PrusaSlicer-only setting, PrusaSlicer default used |
   | `ignored` | SuperSlicer setting with no PrusaSlicer equivalent |
   | `direct` | same name, same meaning, copied as is |
 
+- **You decide on doubtful settings**: when a setting has no certain equivalent, the converter shows its proposed value with the alternatives, and you keep it or pick another one. Your choice is recorded in the report.
 - **Overrides file**: force your own values (e.g. `gcode_label_objects = firmware` for Klipper) on every conversion.
 - Windows `.exe` with a small window, drag-and-drop, and a command-line mode.
 
@@ -43,14 +44,17 @@ Get `ss2ps.exe` from the [Releases](../../releases) page. No installation, no Py
 3. Check the nozzle diameter (used to turn `%` widths into mm).
 4. Optional: pick an overrides file.
 5. Click **Convert**.
+6. If some settings are doubtful, a window lists them: for each one, keep the proposed value or choose another one in the drop-down, then click **OK** (**Cancel** aborts the conversion).
 
-By default the profile is written straight into `%APPDATA%\PrusaSlicer\print` as `<name> (PS).ini`, next to its report `<name> (PS) - report.md`. Restart PrusaSlicer and pick the profile in the print settings list.
+By default the profile is written straight into `%APPDATA%\PrusaSlicer\print` under the same name as the SuperSlicer profile (`<name>.ini`), next to its report `<name> - report.md`. If a PrusaSlicer profile with that name already exists, you are asked before it is replaced. Restart PrusaSlicer and pick the profile in the print settings list.
 
 ### Command line
 
 ```
-ss2ps.exe "<SuperSlicer profile>.ini" [-o out.ini] [--nozzle 0.4] [--overrides my_overrides.ini] [--no-overrides]
+ss2ps.exe "<SuperSlicer profile>.ini" [-o out.ini] [--nozzle 0.4] [--overrides my_overrides.ini] [--no-overrides] [-y] [-f]
 ```
+
+In a terminal, each doubtful setting is asked with its options; press Enter to keep the proposed value.
 
 or with Python 3.8+ (no dependencies):
 
@@ -60,10 +64,12 @@ python ss2ps.py "<SuperSlicer profile>.ini" --nozzle 0.4
 
 | option | default |
 |---|---|
-| `-o`, `--out` | `%APPDATA%\PrusaSlicer\print\<name> (PS).ini` (or next to the source if PrusaSlicer isn't installed) |
+| `-o`, `--out` | `%APPDATA%\PrusaSlicer\print\<name>.ini` (or next to the source if PrusaSlicer isn't installed) |
 | `--nozzle` | `0.4` |
 | `--overrides` | `overrides.ini` next to the exe / script, if present |
 | `--no-overrides` | ignore `overrides.ini` |
+| `-y`, `--yes` | keep the proposed values for doubtful settings without asking |
+| `-f`, `--force` | overwrite the output file if it already exists (otherwise the conversion stops) |
 
 ## Overrides
 
@@ -96,7 +102,7 @@ The exe is created in `dist\ss2ps.exe`.
 
 - Target: PrusaSlicer 2.9.x print settings, source: SuperSlicer 2.5–2.7.
 - Many SuperSlicer-only features (`infill_connection`, `perimeter_direction`, `gap_fill_*` details, seam costs, per-feature accelerations, milling, …) have no PrusaSlicer equivalent and are listed as `ignored` in the report.
-- Always read the `doubt` section of the report and test-print before relying on a converted profile.
+- Always test-print before relying on a converted profile.
 
 Issues and pull requests with more mappings are welcome.
 

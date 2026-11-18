@@ -6,6 +6,7 @@ __pycache__/
 # personal overrides (see overrides.example.ini)
 overrides.ini
 # converted profiles and reports
-*(PS).ini
+*.ini
+!overrides.example.ini
 *report.md
 *rapport.md

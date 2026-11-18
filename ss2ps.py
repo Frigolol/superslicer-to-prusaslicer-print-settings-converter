@@ -3,7 +3,7 @@
 Usage:
     ss2ps                                   -> opens the window
     ss2ps <superslicer_print.ini>           -> window pre-filled (also by drag-and-drop onto the exe)
-    ss2ps <src.ini> [-o out.ini] [--nozzle 0.4] [--overrides overrides.ini]
+    ss2ps <src.ini> [-o out.ini] [--nozzle 0.4] [--overrides overrides.ini] [-y] [-f]
 
 Output:
     - the PrusaSlicer .ini (every PrusaSlicer 2.9.x print key)
@@ -14,7 +14,7 @@ import datetime
 import os
 import sys
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # PrusaSlicer 2.9.x defaults for keys that have NO SuperSlicer equivalent.
@@ -149,6 +149,7 @@ class Converter:
         self.used = set()          # SuperSlicer keys consumed
         self.out = {}              # PrusaSlicer key -> value
         self.log = []              # (status, PrusaSlicer key, value, note)
+        self.doubts = []           # [{key, value, options, note}] to be confirmed by the user
 
     # -- helpers --------------------------------------------------------------
     def get(self, key, default=None):
@@ -171,6 +172,24 @@ class Converter:
         self.out[key] = value
         self.log.append((status, key, value, note))
 
+    def doubt(self, key, value, options, note, closed=False):
+        """Proposed value the user should confirm. `options` = suggested alternatives.
+        closed=True: only the listed options are valid; otherwise any number is accepted."""
+        opts = [value] + [o for o in options if o != value]
+        self.set(key, value, "doubt", note)
+        self.doubts.append({"key": key, "value": value, "options": opts, "note": note, "closed": closed})
+
+    def apply_choices(self, choices):
+        """Applies the user's answers to the doubts: {key: value}."""
+        for d in self.doubts:
+            v = choices.get(d["key"], d["value"]).strip()
+            if v == d["value"]:
+                continue
+            self.out[d["key"]] = v
+            self.log = [(st, k, v, f"{n} -- user chose `{v}` (proposed `{d['value']}`)")
+                        if st == "doubt" and k == d["key"] else (st, k, val, n)
+                        for st, k, val, n in self.log]
+
     # -- conversion -------------------------------------------------------------
     def run(self):
         g = self.get
@@ -179,7 +198,7 @@ class Converter:
             if k in self.ss:
                 v = g(k)
                 if self.disabled(v):
-                    self.set(k, v[1:], "doubt", f"value disabled in SuperSlicer (`{v}`), copied as is")
+                    self.doubt(k, v[1:], [], f"value disabled in SuperSlicer (`{v}`), copied as is")
                 else:
                     self.set(k, v)
 
@@ -216,7 +235,9 @@ class Converter:
             v = g(k, "monotonic")
             nv = FILL_PATTERN_MAP.get(v, v)
             if nv not in PRUSA_TOP_BOTTOM_PATTERNS:
-                nv = "monotoniclines"
+                self.doubt(k, "monotoniclines", sorted(PRUSA_TOP_BOTTOM_PATTERNS),
+                           f"unknown SuperSlicer pattern `{v}`", closed=True)
+                continue
             st = "direct" if nv == v else "converted"
             self.set(k, nv, st, "" if nv == v else f"`{v}` does not exist in PrusaSlicer -> `{nv}`")
         v = g("solid_fill_pattern")
@@ -228,9 +249,12 @@ class Converter:
         v = g("ensure_vertical_shell_thickness", "enabled")
         m = {"enabled_old": "enabled", "enabled": "enabled", "partial": "partial",
              "disabled": "disabled", "1": "enabled", "0": "disabled"}
-        self.set("ensure_vertical_shell_thickness", m.get(v, "enabled"),
-                 "direct" if v in ("enabled", "partial", "disabled") else "doubt",
-                 "" if v in ("enabled", "partial", "disabled") else f"`{v}` -> `{m.get(v, 'enabled')}`")
+        if v in ("enabled", "partial", "disabled"):
+            self.set("ensure_vertical_shell_thickness", v)
+        else:
+            self.doubt("ensure_vertical_shell_thickness", m.get(v, "enabled"), ["enabled", "partial", "disabled"],
+                       f"`{v}` has no exact PrusaSlicer equivalent (partial = PrusaSlicer default, lighter)",
+                       closed=True)
 
         # Elephant foot compensation
         v = g("first_layer_size_compensation", "0")
@@ -241,7 +265,7 @@ class Converter:
 
         # Resolution
         v = g("resolution", "0")
-        self.set("resolution", v, "doubt", "SS 'resolution' -> PrusaSlicer 'resolution' (slice simplification)")
+        self.doubt("resolution", v, ["0"], "slice simplification copied as is (0 = no simplification, PrusaSlicer default)")
         g("resolution_internal")
 
         # Single perimeter on top surfaces
@@ -289,7 +313,9 @@ class Converter:
         # User overrides
         for k, (v, why) in self.overrides.items():
             old = self.out.get(k)
+            self.log = [r for r in self.log if not (r[0] == "doubt" and r[1] == k)]
             self.set(k, v, "override", f"{old} -> {v}: {why}")
+        self.doubts = [d for d in self.doubts if d["key"] not in self.overrides]
 
         # Keys with no equivalent: PrusaSlicer defaults
         for k, v in PRUSA_ONLY_DEFAULTS.items():
@@ -365,28 +391,46 @@ def superslicer_print_dir():
 REPORT_ORDER = ["doubt", "override", "converted", "default", "ignored", "direct"]
 
 
-def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None):
-    """Converts `src`. Returns (ini path, report path, counts per status)."""
+def valid_choice(d, v):
+    """True if `v` is an acceptable answer for doubt `d`."""
+    if d["closed"]:
+        return v in d["options"]
+    try:
+        float(v.rstrip("%"))
+        return True
+    except ValueError:
+        return v in d["options"]
+
+
+def output_path_for(src, out_dir=None):
+    base = os.path.splitext(os.path.basename(src))[0]
+    out_dir = out_dir or prusa_print_dir() or os.path.dirname(os.path.abspath(src))
+    return os.path.join(out_dir, f"{base}.ini")
+
+
+def prepare(src, nozzle=0.4, overrides_path=None):
+    """Parses and converts `src`. Returns the Converter (its `doubts` still to be confirmed)."""
     ss = parse_ini(src)
     if "perimeters" not in ss or "layer_height" not in ss:
         raise ValueError(f"{os.path.basename(src)} does not look like a SuperSlicer print profile")
     overrides = parse_overrides(overrides_path) if overrides_path else {}
     conv = Converter(ss, nozzle, overrides)
-    out = conv.run()
+    conv.run()
+    conv.src, conv.overrides_path = src, overrides_path
+    return conv
 
-    if not out_path:
-        base = os.path.splitext(os.path.basename(src))[0]
-        out_dir = prusa_print_dir() or os.path.dirname(os.path.abspath(src))
-        out_path = os.path.join(out_dir, f"{base} (PS).ini")
+
+def write(conv, out_path):
+    """Writes the PrusaSlicer profile and its report. Returns (ini path, report path, counts per status)."""
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(f"# converted from SuperSlicer by ss2ps {__version__} on {datetime.datetime.now():%Y-%m-%d %H:%M}\n")
-        for k in sorted(out):
-            f.write(f"{k} = {out[k]}\n")
+        for k in sorted(conv.out):
+            f.write(f"{k} = {conv.out[k]}\n")
 
     rep_path = os.path.splitext(out_path)[0] + " - report.md"
     with open(rep_path, "w", encoding="utf-8") as f:
-        f.write(f"# Conversion report: {os.path.basename(src)}\n\n"
-                f"Nozzle: {nozzle} mm  \nOverrides: {overrides_path or 'none'}\n")
+        f.write(f"# Conversion report: {os.path.basename(conv.src)}\n\n"
+                f"Nozzle: {conv.nozzle} mm  \nOverrides: {conv.overrides_path or 'none'}\n")
         for st in REPORT_ORDER:
             rows = [r for r in conv.log if r[0] == st]
             if not rows:
@@ -399,6 +443,31 @@ def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None):
     return out_path, rep_path, counts
 
 
+def convert_file(src, out_path=None, nozzle=0.4, overrides_path=None, ask=None):
+    """Full conversion. `ask(doubts) -> {key: value}` lets the user settle the doubts (None = keep proposals)."""
+    conv = prepare(src, nozzle, overrides_path)
+    if ask and conv.doubts:
+        conv.apply_choices(ask(conv.doubts))
+    return write(conv, out_path or output_path_for(src))
+
+
+def ask_console(doubts):
+    """Asks each doubt in the terminal. Enter = keep the proposed value."""
+    print(f"\n{len(doubts)} setting(s) need your confirmation (Enter = keep proposed value):")
+    res = {}
+    for d in doubts:
+        print(f"\n  {d['key']}: {d['note']}")
+        print("    options: " + ", ".join(d["options"]))
+        while True:
+            a = input(f"    value [{d['value']}]: ").strip() or d["value"]
+            if valid_choice(d, a):
+                break
+            print("    invalid value, choose one of the options" if d["closed"] else "    a number is expected")
+        res[d["key"]] = a
+    print()
+    return res
+
+
 def summary(out_path, rep_path, counts):
     c = ", ".join(f"{k}: {v}" for k, v in counts.items())
     return f"PrusaSlicer profile:\n{out_path}\n\nReport:\n{rep_path}\n\n{c}"
@@ -407,6 +476,52 @@ def summary(out_path, rep_path, counts):
 # ---------------------------------------------------------------------------
 # Graphical interface (tkinter)
 # ---------------------------------------------------------------------------
+def ask_gui(root, doubts):
+    """Modal window: one editable drop-down per doubt. Returns {key: value}, or None if cancelled."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    win = tk.Toplevel(root)
+    win.title("Please confirm these settings")
+    win.transient(root)
+    win.grab_set()
+    frm = ttk.Frame(win, padding=12)
+    frm.grid(sticky="nsew")
+    ttk.Label(frm, text="These settings could not be converted with certainty.\n"
+                        "Keep the proposed value or choose another one (you can also type a value).",
+              justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+    for c, t in enumerate(("Setting", "Value", "Why")):
+        ttk.Label(frm, text=t, font=("", 9, "bold")).grid(row=1, column=c, sticky="w", padx=(0, 8))
+    vars_ = {}
+    for i, d in enumerate(doubts, start=2):
+        ttk.Label(frm, text=d["key"]).grid(row=i, column=0, sticky="w", pady=3, padx=(0, 8))
+        v = tk.StringVar(value=d["value"])
+        ttk.Combobox(frm, textvariable=v, values=d["options"], width=18,
+                     state="readonly" if d["closed"] else "normal").grid(row=i, column=1, padx=(0, 8))
+        ttk.Label(frm, text=d["note"], wraplength=380, justify="left").grid(row=i, column=2, sticky="w")
+        vars_[d["key"]] = v
+
+    result = {}
+
+    def ok():
+        from tkinter import messagebox
+        bad = [d["key"] for d in doubts if not valid_choice(d, vars_[d["key"]].get().strip())]
+        if bad:
+            messagebox.showerror("Invalid value", "A number is expected for:\n" + "\n".join(bad), parent=win)
+            return
+        result.update({k: v.get().strip() for k, v in vars_.items()})
+        win.destroy()
+
+    btns = ttk.Frame(frm)
+    btns.grid(row=len(doubts) + 2, column=0, columnspan=3, pady=(12, 0))
+    ttk.Button(btns, text="OK", command=ok).grid(row=0, column=0, padx=4)
+    ttk.Button(btns, text="Cancel", command=win.destroy).grid(row=0, column=1, padx=4)
+    win.bind("<Return>", lambda e: ok())
+    win.bind("<Escape>", lambda e: win.destroy())
+    root.wait_window(win)
+    return result or None
+
+
 def gui(initial_src=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
@@ -466,12 +581,22 @@ def gui(initial_src=None):
             messagebox.showerror("Error", f"Overrides file not found:\n{o}")
             return
         d = outdir.get().strip() or os.path.dirname(os.path.abspath(s))
-        out_path = os.path.join(d, os.path.splitext(os.path.basename(s))[0] + " (PS).ini")
+        out_path = output_path_for(s, d)
+        if os.path.abspath(out_path) == os.path.abspath(s):
+            messagebox.showerror("Error", "The output would overwrite the SuperSlicer profile.\n"
+                                          "Choose another output folder.")
+            return
         if os.path.exists(out_path) and not messagebox.askyesno(
                 "Replace?", f"{out_path}\nalready exists. Replace it?"):
             return
         try:
-            res = convert_file(s, out_path, n, o)
+            conv = prepare(s, n, o)
+            if conv.doubts:
+                choices = ask_gui(root, conv.doubts)
+                if choices is None:
+                    return
+                conv.apply_choices(choices)
+            res = write(conv, out_path)
         except Exception as e:  # shown to the user
             messagebox.showerror("Error", str(e))
             return
@@ -495,11 +620,20 @@ def main():
     ap.add_argument("--nozzle", type=float, default=0.4, help="nozzle diameter (to convert %% widths to mm)")
     ap.add_argument("--overrides", help="overrides file (default: overrides.ini next to the program, if present)")
     ap.add_argument("--no-overrides", action="store_true", help="ignore overrides.ini")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="accept the proposed values for doubtful settings without asking")
+    ap.add_argument("-f", "--force", action="store_true", help="overwrite the output file if it exists")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args()
 
+    out_path = args.out or output_path_for(args.src)
+    if os.path.abspath(out_path) == os.path.abspath(args.src):
+        ap.error("the output would overwrite the SuperSlicer profile, use -o")
+    if os.path.exists(out_path) and not args.force:
+        ap.error(f"{out_path} already exists (use -f to overwrite, or -o)")
+    interactive = not args.yes and sys.stdin is not None and sys.stdin.isatty()
     ovr = None if args.no_overrides else (args.overrides or default_overrides_path())
-    print(summary(*convert_file(args.src, args.out, args.nozzle, ovr)))
+    print(summary(*convert_file(args.src, out_path, args.nozzle, ovr, ask_console if interactive else None)))
 
 
 if __name__ == "__main__":
