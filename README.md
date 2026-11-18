@@ -1,5 +1,7 @@
 # SuperSlicer to PrusaSlicer print settings converter
 
+> **This project has moved.** It is now part of [SuperSlicer to PrusaSlicer converter](https://github.com/Frigolol/superslicer-to-prusaslicer-converter), which converts **print settings and filaments** in one program. Download the latest version from its [Releases](https://github.com/Frigolol/superslicer-to-prusaslicer-converter/releases). This repository is kept for reference and no longer updated.
+
 Convert a **SuperSlicer print profile** (`.ini`) into a **PrusaSlicer 2.9** print profile, with a report explaining every setting: what was copied, what was converted, what has no equivalent.
 
 ---
