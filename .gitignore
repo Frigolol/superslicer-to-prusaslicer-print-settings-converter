@@ -1,0 +1,10 @@
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+# personal overrides (see overrides.example.ini)
+overrides.ini
+# converted profiles and reports
+*(PS).ini
+*rapport.md
